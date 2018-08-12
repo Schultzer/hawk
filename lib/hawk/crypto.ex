@@ -29,7 +29,7 @@ defmodule Hawk.Crypto do
       iex> Hawk.Crypto.calculate_mac("response", %{algorithm: :sha256, key: "aoijedoaijsdlaksjdl"}, %{method: "GET", resource: "/resource?a=1&b=2", host: "example.com", port: 8080, ts: 1357718381034, nonce: "d3d345f", hash: "U4MKKSmiVxk37JCCrAVIjV/OhB3y+NdwoCr6RShbVkE=", ext: "app-specific-data", app: "hf48hd83qwkj", dlg: "d8djwekds9cj"})
       "bhFj6x2GixVKlUb9/0/yoF0vMMNQscmHMX8N8Al4xVc"
   """
-  @spec calculate_mac(iodata(), Hawk.credentials(), Enumerable.t()) :: binary()
+  @spec calculate_mac(iodata(), map(), keyword() | map()) :: binary()
   def calculate_mac(type, credentials, options) when is_list(options), do: calculate_mac(type, credentials, Map.new(options))
   def calculate_mac(type, %{algorithm: algorithm, key: key}, options) do
     normalized = generate_normalized_string(type, options)
@@ -41,7 +41,7 @@ defmodule Hawk.Crypto do
   end
 
   @doc false
-  @spec generate_normalized_string(iodata(), Enumerable.t()) :: binary()
+  @spec generate_normalized_string(iodata(), keyword() | map()) :: binary()
   def generate_normalized_string(type, options) do
     resource = "#{options[:resource]}" |> URI.parse() |> Hawk.Request.resource()
 
@@ -87,7 +87,7 @@ defmodule Hawk.Crypto do
   end
 
   @doc false
-  @spec calculate_ts_mac(integer() | binary(), Hawk.credentials()) :: binary()
+  @spec calculate_ts_mac(integer() | binary(), map()) :: binary()
   def calculate_ts_mac(ts, %{algorithm: algorithm, key: key}) do
     algorithm
     |> to_atom()
@@ -100,5 +100,4 @@ defmodule Hawk.Crypto do
   def to_atom(algorithm) when is_binary(algorithm), do: :erlang.binary_to_atom(algorithm, :utf8)
   def to_atom(algorithm) when is_list(algorithm),   do: :erlang.list_to_atom(algorithm)
   def to_atom(algorithm) when is_atom(algorithm),   do: algorithm
-
 end

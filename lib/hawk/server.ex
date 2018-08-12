@@ -14,7 +14,7 @@ defmodule Hawk.Server do
   """
   @type payload :: iodata()
 
-  alias Hawk.{Crypto, Header, Now, Unauthorized, BadRequest, InternalServerError}
+  alias Hawk.{Crypto, Header, Now}
   @algorithms Crypto.algorithms()
 
   @doc """
@@ -30,29 +30,28 @@ defmodule Hawk.Server do
       iex> credentials_fn = fn (_) -> %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"} end
       iex> Hawk.Server.authenticate(res, credentials_fn)
   """
-  @spec authenticate(Hawk.request(), Hawk.credentials_fn(), Enumerable.t()) :: %{credentials: map(), artifacts: map()} | no_return()
+  @spec authenticate(Hawk.request(), function(), keyword() | map()) :: {:ok, %{artifacts: map(), credentials: map()}} | {:error, term()}
   def authenticate(request, credentials_fn, options \\ %{})
   def authenticate(request, credentials_fn, options) when is_list(options), do: authenticate(request, credentials_fn, Map.new(options))
-  def authenticate(%{method: method, host: host, port: port, url: url} = req, credentials_fn, options) do
+  def authenticate(%{method: method, host: host, port: port, url: url} = req, credentials_fn, options) when is_function(credentials_fn) do
     options = Map.merge(%{timestamp_skew_sec: 60}, options)
     now = Now.msec(options)
     case Header.parse(req[:authorization]) do
-      %{id: id, ts: _, nonce: _, mac: mac} = attributes ->
+      {:ok, %{id: id, ts: _, nonce: _, mac: mac} = attributes} ->
         artifacts = Map.merge(attributes, %{method: method, host: host, port: port, resource: url})
-        credentials = fetch_credentials(id, credentials_fn)
+        credentials = credentials_fn.(id)
+        %{credentials: credentials, artifacts: artifacts}
+        |> validate_credentials()
+        |> validate_mac(mac, "header")
+        |> check_payload(options)
+        |> check_nonce(options)
+        |> check_timestamp_staleness(now, options, fn -> Crypto.timestamp_message(credentials, options) end)
 
-        ## Validate
-        calculate_mac(artifacts, credentials, mac, "header")
-        check_payload(artifacts, credentials, options)
-        check_nonce(artifacts, credentials, options)
-        check_timestamp_staleness(artifacts, credentials, now, options)
+      {:ok, _attributes} -> {:error, {400, "Missing attributes"}}
 
-        %{artifacts: artifacts, credentials: credentials}
-
-      _  -> BadRequest.error("Missing attributes")
+      {:error, reason}   -> {:error, reason}
     end
   end
-
 
   @doc """
   Authenticate a raw request payload hash - used when payload cannot be provided during `Hawk.Server.authenticate/3`
@@ -62,15 +61,15 @@ defmodule Hawk.Server do
 
       iex> Hawk.Client.authenticate(res, %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}, artifacts)
   """
-  @spec authenticate_payload(iodata(), map(), map(), iodata()) :: %{credentials: map(), artifacts: map()} | :bad_payload_hash
+  @spec authenticate_payload(iodata(), map(), map(), iodata()) :: %{artifacts: map(), credentials: map()} | no_return()
   def authenticate_payload(payload, %{algorithm: algorithm} = credentials, %{hash: hash} = artifacts, content_type) do
     algorithm
     |> Crypto.calculate_payload_hash(payload, content_type)
     |> Kryptiles.fixed_time_comparison(hash)
     |> case do
-         false -> Unauthorized.error("Bad payload hash")
+         false -> {:error, {401, "Bad payload hash", Header.error("Bad payload hash")}}
 
-         true  -> %{credentials: credentials, artifacts: artifacts}
+         true  -> %{artifacts: artifacts, credentials: credentials}
        end
   end
 
@@ -82,17 +81,17 @@ defmodule Hawk.Server do
 
       iex> Hawk.Client.authenticate(res, %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}, artifacts)
   """
-  @spec authenticate_payload_hash(binary(), map()) :: %{artifacts: map()} | :bad_payload_hash
+  @spec authenticate_payload_hash(binary(), map()) :: {:ok, map()} | {:error, term()}
   def authenticate_payload_hash(calculate_hash, %{hash: hash} = artifacts) do
     case Kryptiles.fixed_time_comparison(calculate_hash, hash) do
-      false -> Unauthorized.error("Bad payload hash")
+      false -> {:error, {401, "Bad payload hash", Header.error("Bad payload hash")}}
 
-      true  -> %{artifacts: artifacts}
+      true  -> {:ok, %{artifacts: artifacts}}
     end
   end
 
   @doc false
-  @spec header(map(), Enumerable.t()) :: binary()
+  @spec header(map(), keyword() | map()) :: binary()
   def header(%{credentials: credentials, artifacts: artifacts}, options), do: header(credentials, artifacts, Map.new(options))
 
   @doc """
@@ -109,7 +108,7 @@ defmodule Hawk.Server do
 
       iex> Hawk.Client.authenticate(res, %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}, artifacts)
   """
-  @spec header(map(), map(), Enumerable.t()) :: binary() | no_return()
+  @spec header(map(), map(), keyword() | map()) :: binary()
   def header(credentials, artifacts, options \\ %{})
   def header(credentials, artifacts, options) when is_list(options), do: header(credentials, artifacts, Map.new(options))
   def header(%{key: _key, algorithm: algorithm} = credentials, %{method: _, host: _, port: _, resource: _, ts: _, nonce: _, id: _,} = artifacts, %{hash: _} = options) when algorithm in @algorithms do
@@ -128,11 +127,10 @@ defmodule Hawk.Server do
     maybe_add(artifacts, "Hawk mac=\"#{Crypto.calculate_mac("response", credentials, artifacts)}\"")
   end
 
-
   defp maybe_add(%{hash: hash, ext: ext}, string), do: <<string::binary(), ", hash=", ?", hash::binary(), ?", ", ext=", ?", Header.escape_attribute(ext)::binary(), ?">>
-  defp maybe_add(%{hash: hash}, string), do: <<string::binary(), ", hash=", ?", hash::binary(), ?">>
-  defp maybe_add(%{ext: ext}, string), do: <<string::binary(), ", ext=", ?", Header.escape_attribute(ext)::binary(), ?">>
-  defp maybe_add(_, string), do: string
+  defp maybe_add(%{hash: hash}, string),           do: <<string::binary(), ", hash=", ?", hash::binary(), ?">>
+  defp maybe_add(%{ext: ext}, string),             do: <<string::binary(), ", ext=", ?", Header.escape_attribute(ext)::binary(), ?">>
+  defp maybe_add(_, string),                       do: string
 
   @doc """
   Authenticate a Hawk bewit request
@@ -144,30 +142,35 @@ defmodule Hawk.Server do
 
       iex> Hawk.Client.authenticate(res, %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}, artifacts)
   """
-  @spec authenticate_bewit(Hawk.request(), Hawk.credentials_fn(), Enumerable.t()) :: %{credentials: map(), attributes: map()} | no_return()
+  @spec authenticate_bewit(Hawk.request(), function(), keyword() | map()) :: {:ok, %{attributes: map(), credentials: map()}} | {:error, term()}
   def authenticate_bewit(request, credentials_fn, options \\ %{})
   def authenticate_bewit(request, credentials_fn, options) when is_list(options), do: authenticate_bewit(request, credentials_fn, Map.new(options))
-  def authenticate_bewit(%{url: url}, _credentials_fn, _options) when byte_size(url) > 4096, do: BadRequest.error("Resource path exceeds max length")
-  def authenticate_bewit(%{method: method}, _credentials_fn, _options) when method not in ["GET", "HEAD"], do: Unauthorized.error("Invalid method")
-  def authenticate_bewit(%{authorization: authorization}, _credentials_fn, _options) when authorization !== [], do: BadRequest.error("Multiple authentications")
+  def authenticate_bewit(%{url: url}, _credentials_fn, _options) when byte_size(url) > 4096, do: {:error, {400, "Resource path exceeds max length"}}
+  def authenticate_bewit(%{method: method}, _credentials_fn, _options) when method not in ["GET", "HEAD"], do: {:error, {401, "Invalid method", Header.error("Invalid method")}}
+  def authenticate_bewit(%{authorization: authorization}, _credentials_fn, _options) when authorization !== [], do: {:error, {400, "Multiple authentications"}}
   def authenticate_bewit(req, credentials_fn, options) do
-    options = Map.merge(%{timestamp_skew_sec: 60}, options)
+     options = Map.merge(%{timestamp_skew_sec: 60}, options)
     now = Now.msec(options)
-    [bewit, url] = parse(req[:url], now)
-    artifacts = %{ts: bewit[:exp], nonce: "", method: "GET", resource: url, host: req[:host], port: req[:port], ext: bewit[:ext]}
-    credentials = fetch_credentials(bewit["id"], credentials_fn)
+    case parse(req[:url], now) do
+      {:error, reason}    -> {:error, reason}
 
-    ## Validate mac
-    calculate_mac(artifacts, credentials, bewit[:mac], "bewit")
+      {:ok, bewit, url} ->
+        %{credentials: credentials_fn.(bewit[:id]), artifacts: %{ts: bewit[:exp], nonce: "", method: "GET", resource: url, host: req[:host], port: req[:port], ext: bewit[:ext]}}
+        |> validate_credentials()
+        |> validate_mac(bewit[:mac], "bewit")
+        |> case do
+             {:ok, %{credentials: credentials}} -> {:ok, %{attributes: bewit, credentials: credentials}}
 
-    %{credentials: credentials, attributes: bewit}
+             {:error, reason}                   -> {:error, reason}
+           end
+    end
   end
 
   defp parse(binary, now, resource \\ <<>>)
-  defp parse(<<>>, _now, _resource), do: BadRequest.error("Invalid bewit encoding")
-  defp parse([], _now, _resource), do: BadRequest.error("Invalid bewit encoding")
-  defp parse(<<_::binary-size(1), "bewit=">>, _now, _resource), do: Unauthorized.error("Empty bewit")
-  defp parse([_, ?b, ?e, ?w, ?i, ?t, ?=], _now, _resource), do: Unauthorized.error("Empty bewit")
+  defp parse(<<>>, _now, _resource), do: {:error, {400, "Invalid bewit encoding"}}
+  defp parse([], _now, _resource), do: {:error, {400, "Invalid bewit encoding"}}
+  defp parse(<<_::binary-size(1), "bewit=">>, _now, _resource), do: {:error, {401, "Empty bewit", Header.error("Empty bewit")}}
+  defp parse([_, ?b, ?e, ?w, ?i, ?t, ?=], _now, _resource), do: {:error, {401, "Empty bewit", Header.error("Empty bewit")}}
   defp parse(<<b::binary-size(1), "bewit=", bewit::binary()>>, now, resource) do
     resource = if b == "?", do: <<resource::binary(), b::binary()>>, else: resource
     bewit
@@ -177,6 +180,7 @@ defmodule Hawk.Server do
   defp parse(<<b::binary-size(1), rest::binary()>>, now, resource) do
     parse(rest, now, <<resource::binary(), b::binary()>>)
   end
+  defp parse(_binary, _now, _resource), do: {:error, {401, "Unauthorized", Header.error()}}
 
   defp parse_bewit(binary, resource, bewit \\ <<>>)
   defp parse_bewit(<<>>, resource, bewit), do: [bewit, String.trim(resource, "?")]
@@ -191,106 +195,116 @@ defmodule Hawk.Server do
     |> Base.url_decode64(padding: false)
     |> validate_bewit(now, url)
   end
-  defp validate_bewit(:error, _now, _url), do: BadRequest.error("Invalid bewit encoding")
+  defp validate_bewit(:error, _now, _url), do: {:error, {400, "Invalid bewit encoding"}}
   defp validate_bewit({:ok, bewit}, now, url) do
     case :string.split(bewit, "\\", :all) do
-      values when length(values) != 4                            -> BadRequest.error("Invalid bewit structure")
+      values when length(values) != 4                            -> {:error, {400, "Invalid bewit structure"}}
 
-      [id, exp, mac | _] when id == "" or exp == "" or mac == "" -> BadRequest.error("Missing bewit attributes")
+      [id, exp, mac | _] when id == "" or exp == "" or mac == "" -> {:error, {400, "Missing bewit attributes"}}
 
       [_id, exp | _] = values                                    ->
+      bewit = [:id, :exp, :mac, :ext] |> Enum.zip(values) |> Enum.into(%{})
       case :erlang.binary_to_integer(exp, 10) * 1000 <= now do
-        true  -> Unauthorized.error("Access expired")
+        true  -> {:error, {401, "Access expired", Header.error("Access expired")}}
 
-        false -> [[:id, :exp, :mac, :ext] |> Enum.zip(values) |> Enum.into(%{}), url]
+        false -> {:ok, bewit, url}
       end
     end
   end
 
   @doc """
-  *  options are the same as authenticate() with the exception that the only supported options are:
-  * 'nonceFunc', 'timestampSkewSec', 'localtimeOffsetMsec'
+  Authenticate a message
+
+  ## Options
+   * `:localtime_offset_msec` Local clock time offset express in a number of milliseconds (positive or negative). Defaults to 0.
+   * `:timestamp_skew_sec`. Defaults to 60.
+   * `:nonce_fn` Local clock time offset express in a number of milliseconds (positive or negative). Defaults to 0.
+
+
+  ## Examples
+
+      iex> Hawk.Server.authenticate_message("https://exmaple.com", 4000, "my_message", authorization, credentials_fn)
+      {:ok, map} | {:error, reason}
   """
-  @spec authenticate_message(binary(), integer(), binary(), map(), Hawk.credentials_fn(), Enumerable.t()) :: map() | {:error, term()}
+  @spec authenticate_message(binary(), integer(), binary(), map(), function(), keyword() | map()) :: {:ok, map()} | {:error, term()}
   def authenticate_message(host, port, message, authorization, credentials_fn, options \\ %{})
   def authenticate_message(host, port, message, authorization, credentials_fn, options) when is_list(options) do
     authenticate_message(host, port, message, authorization, credentials_fn, Map.new(options))
   end
-  def authenticate_message(host, port, message, %{id: id, ts: ts, nonce: nonce, hash: hash, mac: mac} = authorization, credentials_fn, options) do
+  def authenticate_message(host, port, message, %{id: id, ts: ts, nonce: nonce, hash: hash, mac: mac}, credentials_fn, options) when is_function(credentials_fn) do
     options = Map.merge(%{timestamp_skew_sec: 60}, options)
     now = Now.msec(options)
-    artifacts = %{ts: ts, nonce: nonce, host: host, port: port, hash: hash}
-    credentials = fetch_credentials(id, credentials_fn)
 
-    ## Validate
-    calculate_mac(artifacts, credentials, mac, "message")
-    check_payload(authorization, credentials, %{payload: message})
-    check_nonce(authorization, credentials, options)
-    check_timestamp_staleness(authorization, credentials, now, options)
+    %{artifacts: %{port: port, host: host, ts: ts, nonce: nonce, hash: hash}, credentials: credentials_fn.(id)}
+    |> validate_credentials()
+    |> validate_mac(mac, "message")
+    |> check_payload(%{payload: message}, "Bad message hash")
+    |> check_nonce(options)
+    |> check_timestamp_staleness(now, options)
+    |> case do
+         {:error, reason}                   -> {:error, reason}
 
-    %{artifacts: %{ts: ts, nonce: nonce, host: host, port: port, hash: hash}, credentials: credentials}
+         {:ok, %{credentials: credentials}} -> {:ok, %{credentials: credentials}}
+       end
   end
-  def authenticate_message(_host, _port, _message, _authorization, _credentials_fn, _options), do: BadRequest.error("Invalid authorization")
+  def authenticate_message(_host, _port, _message, _authorization, _credentials_fn, _options), do: {:error, {400, "Invalid authorization"}}
 
-  defp fetch_credentials(id, credentials_fn) do
-    try do
-      credentials_fn.(id)
-    else
-      %{algorithm: algorithm} when algorithm not in @algorithms -> Unauthorized.error("Unknown algorithm")
+  defp validate_credentials(%{credentials: %{algorithm: algorithm, key: _key}} = result) when algorithm in @algorithms, do: {:ok, result}
+  defp validate_credentials(%{credentials: %{algorithm: _,}}), do: {:error, {500, "Unknown algorithm"}}
+  defp validate_credentials(%{credentials: credentials}) when is_map(credentials), do: {:error, {500, "Invalid credentials"}}
+  defp validate_credentials(%{credentials: _}), do: {:error, {401, "Unknown credentials", Header.error("Unknown credentials")}}
 
-      %{algorithm: _algorithm, key: _key} = credentials         -> credentials
-
-      %{} = _credentials                                        -> InternalServerError.error("Invalid credentials")
-
-
-      _                                                         -> Unauthorized.error("Unknown credentials")
-    end
-  end
-
-  defp calculate_mac(artifacts, credentials, mac, type) do
+  def validate_mac({:error, reason}, _mac, _type), do: {:error, reason}
+  def validate_mac({:ok, %{artifacts: artifacts, credentials: credentials}} = ok, mac, type) do
     type
     |> Crypto.calculate_mac(credentials, artifacts)
     |> Kryptiles.fixed_time_comparison(mac)
     |> case do
-         false -> Unauthorized.error("Bad mac")
+        false -> {:error, {401, "Bad mac", Header.error("Bad mac")}}
 
-         true  -> :ok
-        end
+        true  -> ok
+      end
   end
 
-  defp check_payload(%{hash: hash}, %{algorithm: algorithm}, %{payload: payload}) do
+  defp check_payload(result, options, msg \\ "Bad payload hash")
+  defp check_payload({:error, reason}, _options, _msg), do: {:error, reason}
+  defp check_payload({:ok, %{artifacts: %{hash: hash}, credentials: %{algorithm: algorithm}}} = ok, %{payload: payload}, msg) do
     algorithm
     |> Crypto.calculate_payload_hash(payload, "")
     |> Kryptiles.fixed_time_comparison(hash)
     |> case do
-         false -> Unauthorized.error("Bad payload hash")
+         false -> {:error, {401, msg, Header.error(msg)}}
 
-         true  -> :ok
+         true  -> ok
         end
   end
-  defp check_payload(_artifacts, _credentials, %{payload: _}), do: Unauthorized.error("Missing required payload hash")
-  defp check_payload(%{hash: _hash}, _credentials, _options), do: :ok
-  defp check_payload(_artifacts, _credentials, _options), do: :ok
+  defp check_payload({:ok, _}, %{payload: _}, _attributes), do: {:error, {401, "Missing required payload hash", Header.error("Missing required payload hash")}}
+  defp check_payload({:ok, %{artifacts: %{hash: _hash}}} = ok, _options, _attributes), do: ok
+  defp check_payload({:ok, _} = ok, _options, _attributes), do: ok
 
-  defp check_nonce(%{nonce: nonce, ts: ts}, %{key: key}, %{nonce_fn: nounce_fn}) do
+  defp check_nonce(result, options)
+  defp check_nonce({:error, reason}, _options), do: {:error, reason}
+  defp check_nonce({:ok, %{artifacts: %{nonce: nonce, ts: ts}, credentials: %{key: key}}} = ok, %{nonce_fn: nounce_fn}) when is_function(nounce_fn) do
     try do
       nounce_fn.(key, nonce, ts)
     rescue
-      _error      -> Unauthorized.error("Invalid nonce")
+      _error      -> {:error, {401, "Invalid nonce", Header.error("Invalid nonce")}}
     else
-      :ok         -> :ok
+      :ok         -> ok
 
-      _           -> Unauthorized.error("Invalid nonce")
+      _           -> {:error, {401, "Invalid nonce", Header.error("Invalid nonce")}}
     end
   end
-  defp check_nonce(_artifacts, _credentials, _options), do: :ok
+  defp check_nonce({:ok, _} = ok, _options), do: ok
 
-  defp check_timestamp_staleness(%{ts: ts}, credentials, now, %{timestamp_skew_sec: timestamp_skew_sec} = options) do
+  defp check_timestamp_staleness(result, now, options, attributes \\ fn -> [] end)
+  defp check_timestamp_staleness({:error, reason}, _now, _options, _attributes), do: {:error, reason}
+  defp check_timestamp_staleness({:ok, %{artifacts: %{ts: ts}}} = ok, now, %{timestamp_skew_sec: timestamp_skew_sec}, attributes) do
     ts = if is_binary(ts), do: :erlang.binary_to_integer(ts), else: ts
     case Kernel.abs((ts * 1000) - now) > (timestamp_skew_sec * 1000) do
-      true  -> Unauthorized.error("Stale timestamp", Crypto.timestamp_message(credentials, options))
+      true  -> {:error, {401, "Stale timestamp", Header.error("Stale timestamp", attributes.())}}
 
-      false -> :ok
+      false -> ok
     end
   end
 end

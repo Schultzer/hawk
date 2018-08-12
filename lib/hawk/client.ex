@@ -24,10 +24,7 @@ defmodule Hawk.Client do
   @typedoc false
   @type headers() :: [{binary() | charlist(), binary() | charlist()}]
 
-  @typedoc false
-  @type artifacts :: map()
-
-  alias Hawk.{Crypto, Header, Request, Now, InternalServerError}
+  alias Hawk.{Crypto, Header, Request, Now}
 
   @algorithms Crypto.algorithms()
   @methods ~w(delete get patch post put)a
@@ -51,7 +48,7 @@ defmodule Hawk.Client do
 
       Hawk.Client.header("http://example.com/resource?a=b", :get, %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"})
   """
-  @spec header(binary() | URI.t(), Hawk.method(), Hawk.credentials(), Enumerable.t()) :: %{artifacts: artifacts(), header: binary()}
+  @spec header(binary() | URI.t(), Hawk.method(), map(), keyword() | map()) :: %{artifacts: map(), header: binary()}
   def header(uri, method, credentials, options \\ %{})
   def header(uri, method, credentials, options) when is_list(options), do: header(uri, method, credentials, Map.new(options))
   def header(uri, method, %{algorithm: algorithm, id: _, key: _} = credentials, options) when is_binary(uri) and byte_size(uri) > 0 and algorithm in @algorithms and method in @methods do
@@ -104,35 +101,38 @@ defmodule Hawk.Client do
 
       iex> Hawk.Client.authenticate(res, %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}, artifacts)
   """
-  @spec authenticate(headers(), Hawk.credentials(), artifacts(), Enumerable.t()) :: map() | no_return()
+  @spec authenticate(headers(), map(), map(), keyword() | map()) :: {:ok, map()} | {:error, term()}
   def authenticate(headers, credentials, artifacts, options \\ %{})
   def authenticate(headers, credentials, artifacts, options) when is_list(options), do: authenticate(headers, credentials, artifacts, Map.new(options))
   def authenticate(headers, %{algorithm: algorithm, id: _id, key: _key} = credentials, artifacts, options) when algorithm in @algorithms and is_map(artifacts) and is_list(headers) do
     headers
     |> parse_headers()
     |> validate_headers(credentials, artifacts, options)
-    |> Map.drop(["content-type"])
+    |> case do
+       {:error, reason} -> {:error, reason}
+
+       {:ok, headers}   -> {:ok, Map.drop(headers, ["content-type"])}
+    end
   end
 
   defp parse_headers(headers, header \\ %{})
+  defp parse_headers(_headers, {:error, reason}), do: {:error, reason}
   defp parse_headers([], headers), do: headers
   for header <- ['www-authenticate', "www-authenticate"] do
     defp parse_headers([{unquote(header), value} | rest], headers) do
-      try do
-        headers = Map.put(headers, "#{unquote(header)}", Header.parse(value))
-        parse_headers(rest, headers)
-      rescue
-        _error -> Hawk.InternalServerError.error("Invalid WWW-Authenticate header")
+      case Header.parse(value) do
+        {:ok, result}     -> parse_headers(rest, Map.put(headers, "#{unquote(header)}", result))
+
+        {:error, _reason} -> parse_headers(rest, {:error, {500, "Invalid WWW-Authenticate header"}})
       end
     end
   end
   for header <- ['server-authorization', "server-authorization"] do
     defp parse_headers([{unquote(header), value} | rest], headers) do
-      try do
-        headers = Map.put(headers, "#{unquote(header)}", Header.parse(value))
-        parse_headers(rest, headers)
-      rescue
-        _error -> Hawk.InternalServerError.error("Invalid Server-Authorization header")
+      case Header.parse(value) do
+        {:ok, result}    -> parse_headers(rest, Map.put(headers, "#{unquote(header)}", result))
+
+        {:error, _reason} -> parse_headers(rest, {:error, {500, "Invalid Server-Authorization header"}})
       end
     end
   end
@@ -145,6 +145,7 @@ defmodule Hawk.Client do
   end
   defp parse_headers([_ | rest], headers), do: parse_headers(rest, headers)
 
+  defp validate_headers({:error, reason}, _credentials, _artifacts, _options), do: {:error, reason}
   defp validate_headers(%{"server-authorization" => _} = headers, %{algorithm: algorithm} = credentials, artifacts, options) do
     headers
     |> validate_timestamp(credentials)
@@ -157,9 +158,9 @@ defmodule Hawk.Client do
 
   defp validate_timestamp(%{"www-authenticate" => %{ts: ts, tsm: tsm}} = headers, credentials) do
     case tsm !== Crypto.calculate_ts_mac(ts, credentials) do
-      true  -> InternalServerError.error("Invalid server timestamp hash")
+      true  -> {:error, {500, "Invalid server timestamp hash"}}
 
-      false -> headers
+      false -> {:ok, headers}
     end
   end
   # defp validate_timestamp(%{"www-authenticate" => %{error: "Stale timestamp"}} = headers, _credentials) do
@@ -168,27 +169,29 @@ defmodule Hawk.Client do
   # defp validate_timestamp(%{"www-authenticate" => %{error: error}} = headers, _credentials) do
   #   InternalServerError.error("Invalid WWW-Authenticate header")
   # end
-  defp validate_timestamp(headers, _credentials),  do: headers
+  defp validate_timestamp(headers, _credentials),  do: {:ok, headers}
 
-  defp validate_mac(%{"server-authorization" => %{ext: ext, hash: hash, mac: mac}} = headers, credentials, artifacts) do
+  defp validate_mac({:error, reason}, _credentials, _artifacts), do: {:error, reason}
+  defp validate_mac({:ok, %{"server-authorization" => %{ext: ext, hash: hash, mac: mac}}} = headers, credentials, artifacts) do
     case mac !== Crypto.calculate_mac("response", credentials, %{artifacts | ext: ext, hash: hash}) do
-      true  -> InternalServerError.error("Bad response mac")
+      true  -> {:error, {500, "Bad response mac"}}
 
       false -> headers
     end
   end
   defp validate_mac(headers, _credentials, _artifacts), do: headers
 
+  defp validate_hash({:error, reason}, _algorithm, _options), do: {:error, reason}
   defp validate_hash(headers, _algorithm, %{payload: ""}), do: headers
-  defp validate_hash(%{"server-authorization" => %{hash: hash}} = headers, algorithm, %{payload: payload}) do
+  defp validate_hash({:ok, %{"server-authorization" => %{hash: hash}} = headers} = ok, algorithm, %{payload: payload}) do
     case hash !== Crypto.calculate_payload_hash(algorithm, payload, headers["content-type"]) do
-      true  -> InternalServerError.error("Bad response payload mac")
+      true  -> {:error, {500, "Bad response payload mac"}}
 
-      false -> headers
+      false -> ok
     end
   end
-  defp validate_hash(%{"server-authorization" => _}, _algorithm, %{payload: _payload}) do
-    InternalServerError.error("Missing response hash attribute")
+  defp validate_hash({:ok, %{"server-authorization" => _}}, _algorithm, %{payload: _payload}) do
+    {:error, {500, "Missing response hash attribute"}}
   end
   defp validate_hash(headers, _algorithm, _options), do: headers
 
@@ -210,7 +213,7 @@ defmodule Hawk.Client do
 
       iex> Hawk.Client.get_bewit(uri, credentials, ttl)
   """
-  @spec get_bewit(binary() | URI.t(), Hawk.credentials(), integer(), Enumerable.t()) :: %{artifacts: artifacts(), bewit: binary()}
+  @spec get_bewit(binary() | URI.t(), map(), integer(), keyword() | map()) :: %{artifacts: map(), bewit: binary()}
   def get_bewit(uri, credentials, ttl, options \\ %{})
   def get_bewit(uri, credentials, ttl, options) when is_list(options), do: get_bewit(uri, credentials, ttl, Map.new(options))
   def get_bewit(uri, %{algorithm: algorithm, id: _, key: _} = credentials, ttl, options) when is_binary(uri) and byte_size(uri) > 0 and is_integer(ttl) and algorithm in @algorithms do
@@ -237,7 +240,7 @@ defmodule Hawk.Client do
       iex> Hawk.Client.message("example.com", 8000, "{\\"some\\":\\"payload\\"}", %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}, hash: "osPwIDqS9cUeJnQRQEdq8upF/tGVVyo6KFgUiUoDoLs=", timestamp: 1531684204, nonce: "x0AIzk")
       %{hash: "osPwIDqS9cUeJnQRQEdq8upF/tGVVyo6KFgUiUoDoLs=", id: "dh37fgj492je", mac: "Yb4eQ2MXJAc4MFvyouOOGhLKE9Ys/PqdYYub6gYwgrI=", nonce: "x0AIzk", ts: 1531684204}
   """
-  @spec message(binary(), 0..65535, binary(), Hawk.credentials(), Enumerable.t()) :: %{hash: binary(), id: binary(), mac: binary(), host: binary(), port: 0..65535, nonce: binary(), ts: integer()}
+  @spec message(binary(), 0..65535, binary(), map(), keyword() | map()) :: %{hash: binary(), id: binary(), mac: binary(), host: binary(), port: 0..65535, nonce: binary(), ts: integer()}
   def message(host, port, message, credentials, options \\ %{})
   def message(host, port, message, credentials, options) when is_list(options), do: message(host, port, message, credentials, Map.new(options))
   def message(host, port, message, %{algorithm: algorithm, id: id, key: _} = credentials, options) when is_binary(host) and byte_size(host) > 0 and is_binary(message) and port in 0..65535 and algorithm in @algorithms do

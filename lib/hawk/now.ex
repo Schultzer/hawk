@@ -2,11 +2,11 @@ defmodule Hawk.Now do
   @moduledoc false
 
   @doc false
-  @spec msec(Enumerable.t()) :: integer()
+  @spec msec(keyword() | map()) :: integer()
   def msec(options \\ [])
   def msec(options), do: SNTP.now() + (options[:localtime_offset_msec] || 0)
 
-  @spec sec(Enumerable.t()) :: integer()
+  @spec sec(keyword() | map()) :: integer()
   def sec(options \\ [])
   def sec(options) do
     options

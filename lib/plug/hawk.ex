@@ -32,8 +32,7 @@ defmodule Plug.Hawk do
 
   @behaviour Plug
 
-  alias Plug.{Conn, Conn.Status}
-  use Plug.ErrorHandler
+  alias Plug.Conn
 
   def init(opts) do
     opts
@@ -45,24 +44,29 @@ defmodule Plug.Hawk do
 
     conn
     |> Hawk.Request.new(auth)
-    |> Hawk.Server.authenticate(opts[:credentials_fn], auth)
-    |> Hawk.Server.header(header)
-    |> put_header(conn)
+    |> authenticate(opts[:credentials_fn], auth)
+    |> handle_error(conn, header)
   end
 
-  @spec put_header(binary(), Conn.t()) :: Conn.t()
-  def put_header(header, conn) do
-    conn
-    |> Conn.put_resp_header("server-authorization", header)
-    |> Conn.resp(200, "authenticated")
+  def authenticate({:error, reason}, _credentials_fn, _options), do: {:error, reason}
+  def authenticate(request, credentials_fn, options) do
+    Hawk.Server.authenticate(request, credentials_fn, options)
   end
 
-  def handle_errors(conn, %{kind: _kind, reason: %Hawk.Unauthorized{plug_status: status, header: header, message: msg}, stack: _stack}) do
+  def handle_error({:error, {401, msg, {header, value}}}, conn, _options) do
     conn
-    |> Conn.put_resp_header("www-authenticate", header)
-    |> Conn.send_resp(status, msg)
+    |> Conn.put_resp_header(header, value)
+    |> Conn.resp(401, msg)
+    |> Conn.halt()
   end
-  def handle_errors(conn, %{kind: _kind, reason: %{plug_status: status}, stack: _stack}) do
-    Conn.send_resp(conn, status, Status.reason_phrase(status))
+  def handle_error({:error, {status, msg}}, conn, _options) do
+    conn
+    |> Conn.resp(status, msg)
+    |> Conn.halt()
+  end
+  def handle_error({:ok, result}, conn, options) do
+    conn
+    |> Conn.put_resp_header("server-authorization", Hawk.Server.header(result, options))
+    |> Conn.resp(200, "")
   end
 end

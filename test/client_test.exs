@@ -32,41 +32,6 @@ defmodule HawkClientTest do
       %{header: header} = Client.header("https://example.net/somewhere/over/the/rainbow", :post, credentials, ts: 1353809207, nonce: "Ygvqdz", payload: "something to write about", content_type: "text/plain", hash: Crypto.calculate_payload_hash(:sha256, "something to write about", "text/plain"))
       assert header == "Hawk id=\"123456\", ts=\"1353809207\", nonce=\"Ygvqdz\", hash=\"2QfCt3GuY9HQnHWyWD3wX68ZOKbynqlfYmuO2ZBRqtY=\", mac=\"HTgtd0jPI6E4izx8e4OHdO36q00xFCU0FolNq3RiCYs=\""
     end
-
-    # test "errors on missing uri" do
-    #   assert Client.header("", :post, %{}) == :invalid_uri
-    # end
-
-    # test "errors on invalid uri" do
-    #   assert Client.header(4, :post, %{}) == :invalid_uri
-    # end
-
-    # test "errors on missing method" do
-    #   assert Client.header("https://example.net/somewhere/over/the/rainbow", "", %{}) == :unknown_method
-    # end
-
-    # test "errors on invalid method" do
-    #   assert Client.header("https://example.net/somewhere/over/the/rainbow", 4, %{}) == :unknown_method
-    # end
-
-    # test "errors on invalid credentials (id)" do
-    #   credentials = %{key: "2983d45yun89q", algorithm: :sha256}
-    #   assert Client.header("https://example.net/somewhere/over/the/rainbow", :post, credentials, ext: 'Bazinga!', timestamp: 1353809207) == :invalid_credentials
-    # end
-
-    # test "errors on missing credentials" do
-    #   assert Client.header("https://example.net/somewhere/over/the/rainbow", :post, %{}, ext: "Bazinga!", timestamp: 1353809207) == :invalid_credentials
-    # end
-
-    # test "errors on invalid credentials" do
-    #   credentials = %{id: "123456", algorithm: :sha256}
-    #   assert Client.header("https://example.net/somewhere/over/the/rainbow", :post, credentials, ext: "Bazinga!", timestamp: 1353809207) == :invalid_credentials
-    # end
-
-    # test "errors on invalid algorithm" do
-    #   credentials = %{id: "123456", key: "2983d45yun89q", algorithm: :hmac_sha_0}
-    #   assert Client.header("https://example.net/somewhere/over/the/rainbow", :post, credentials, payload: "something, anything!", ext: "Bazinga!", timestamp: 1353809207) == :unknown_algorithm
-    # end
   end
 
   def artifacts(_context) do
@@ -89,53 +54,43 @@ defmodule HawkClientTest do
     setup :artifacts
 
     test "rejects on invalid header", %{artifacts: artifacts, credentials: credentials} do
-      assert_raise Hawk.InternalServerError, "Invalid Server-Authorization header", fn ->
-        Client.authenticate([{'server-authorization', 'Hawk mac="abc", bad="xyz"'}], credentials, artifacts)
-      end
+      assert {:error, {500, "Invalid Server-Authorization header"}} == Client.authenticate([{'server-authorization', 'Hawk mac="abc", bad="xyz"'}], credentials, artifacts)
     end
 
     test "rejects on invalid mac", %{artifacts: artifacts, credentials: credentials} do
       headers = [{'content-type', 'text/plain'}, {'server-authorization', 'Hawk mac="_IJRsMl/4oL+nn+vKoeVZPdCHXB4yJkNnBbTbHFZUYE=", hash="f9cDF/TDm7TkYRLnGwRMfeDzT6LixQVLvrIKhh0vgmM=", ext="response-specific"'}]
       artifacts = %{artifacts | ts: "1362336900", nonce: "eb5S_L", mac: "BlmSe8K+pbKIb6YsZCnt4E1GrYvY1AaYayNR82dGpIk="}
-      assert_raise Hawk.InternalServerError, "Bad response mac", fn ->
-        Client.authenticate(headers, credentials, artifacts)
-      end
+      assert {:error, {500, "Bad response mac"}} == Client.authenticate(headers, credentials, artifacts)
     end
 
     test "returns headers on ignoring hash", %{artifacts: artifacts, credentials: credentials} do
       headers = [{'content-type', 'text/plain'}, {'server-authorization', 'Hawk mac="XIJRsMl/4oL+nn+vKoeVZPdCHXB4yJkNnBbTbHFZUYE=", hash="f9cDF/TDm7TkYRLnGwRMfeDzT6LixQVLvrIKhh0vgmM=", ext="response-specific"'}]
       artifacts = %{artifacts | ts: "1362336900", nonce: "eb5S_L", mac: "BlmSe8K+pbKIb6YsZCnt4E1GrYvY1AaYayNR82dGpIk="}
-      assert Client.authenticate(headers, credentials, artifacts) == %{"server-authorization" => %{mac: "XIJRsMl/4oL+nn+vKoeVZPdCHXB4yJkNnBbTbHFZUYE=", hash: "f9cDF/TDm7TkYRLnGwRMfeDzT6LixQVLvrIKhh0vgmM=", ext: "response-specific"}}
+      assert {:ok, %{"server-authorization" => %{mac: "XIJRsMl/4oL+nn+vKoeVZPdCHXB4yJkNnBbTbHFZUYE=", hash: "f9cDF/TDm7TkYRLnGwRMfeDzT6LixQVLvrIKhh0vgmM=", ext: "response-specific"}}} == Client.authenticate(headers, credentials, artifacts)
     end
 
     test "validates response payload", %{artifacts: artifacts, credentials: credentials} do
       headers = [{'content-type', 'text/plain'}, {'server-authorization', 'Hawk mac="odsVGUq0rCoITaiNagW22REIpqkwP9zt5FyqqOW9Zj8=", hash="f9cDF/TDm7TkYRLnGwRMfeDzT6LixQVLvrIKhh0vgmM=", ext="response-specific"'}]
       artifacts = %{artifacts | ts: "1453070933", nonce: "3hOHpR", mac: "/DitzeD66F2f7O535SERbX9p+oh9ZnNLqSNHG+c7/vs="}
-      assert Client.authenticate(headers, credentials, artifacts, payload: "some reply") == %{"server-authorization" => %{mac: "odsVGUq0rCoITaiNagW22REIpqkwP9zt5FyqqOW9Zj8=", hash: "f9cDF/TDm7TkYRLnGwRMfeDzT6LixQVLvrIKhh0vgmM=", ext: "response-specific"}}
+      assert {:ok, %{"server-authorization" => %{mac: "odsVGUq0rCoITaiNagW22REIpqkwP9zt5FyqqOW9Zj8=", hash: "f9cDF/TDm7TkYRLnGwRMfeDzT6LixQVLvrIKhh0vgmM=", ext: "response-specific"}}} == Client.authenticate(headers, credentials, artifacts, payload: "some reply")
     end
 
     test "errors on invalid response payload", %{artifacts: artifacts, credentials: credentials} do
       headers = [{'content-type', 'text/plain'}, {'server-authorization', 'Hawk mac="odsVGUq0rCoITaiNagW22REIpqkwP9zt5FyqqOW9Zj8=", hash="f9cDF/TDm7TkYRLnGwRMfeDzT6LixQVLvrIKhh0vgmM=", ext=\"response-specific"'}]
       artifacts = %{artifacts | ts: "1453070933", nonce: "3hOHpR", mac: "/DitzeD66F2f7O535SERbX9p+oh9ZnNLqSNHG+c7/vs="}
-      assert_raise Hawk.InternalServerError, "Bad response payload mac", fn ->
-        Client.authenticate(headers, credentials, artifacts, payload: "wrong reply")
-      end
+      assert {:error, {500, "Bad response payload mac"}} == Client.authenticate(headers, credentials, artifacts, payload: "wrong reply")
     end
 
     test "fails on invalid WWW-Authenticate header format", %{artifacts: artifacts, credentials: credentials} do
-      assert_raise Hawk.InternalServerError, "Invalid WWW-Authenticate header", fn ->
-        Client.authenticate([{'www-authenticate', 'Hawk ts="1362346425875", tsm="PhwayS28vtnn3qbv0mqRBYSXebN/zggEtucfeZ620Zo=", x="Stale timestamp"'}], credentials, artifacts)
-      end
+      assert {:error, {500, "Invalid WWW-Authenticate header"}} == Client.authenticate([{'www-authenticate', 'Hawk ts="1362346425875", tsm="PhwayS28vtnn3qbv0mqRBYSXebN/zggEtucfeZ620Zo=", x="Stale timestamp"'}], credentials, artifacts)
     end
 
     test "fails on invalid WWW-Authenticate header format (timestamp hash)", %{artifacts: artifacts, credentials: credentials}  do
-      assert_raise Hawk.InternalServerError, "Invalid server timestamp hash", fn ->
-        Client.authenticate([{'www-authenticate', 'Hawk ts="1362346425875", tsm="hwayS28vtnn3qbv0mqRBYSXebN/zggEtucfeZ620Zo=", error="Stale timestamp"'}], credentials, artifacts)
-      end
+      assert {:error, {500, "Invalid server timestamp hash"}} == Client.authenticate([{'www-authenticate', 'Hawk ts="1362346425875", tsm="hwayS28vtnn3qbv0mqRBYSXebN/zggEtucfeZ620Zo=", error="Stale timestamp"'}], credentials, artifacts)
     end
 
     test "skips tsm validation when missing ts", %{artifacts: artifacts, credentials: credentials} do
-      assert Client.authenticate([{'www-authenticate', 'Hawk error="Stale timestamp"'}], credentials, artifacts) == %{"www-authenticate" => %{error: "Stale timestamp"}}
+      assert {:ok, %{"www-authenticate" => %{error: "Stale timestamp"}}} == Client.authenticate([{'www-authenticate', 'Hawk error="Stale timestamp"'}], credentials, artifacts)
     end
   end
 

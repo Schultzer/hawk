@@ -9,13 +9,13 @@ defmodule PlugBewitTest do
 
   describe "call/2" do
     test "should fail on invalid host header", %{conn: conn,credentials_fn: credentials_fn} do
-      conn = put_req_header(conn, "host", "example.com:something")
+      conn = conn
+             |> put_req_header("host", "example.com:something")
+             |> Plug.Hawk.call(credentials_fn: credentials_fn)
+             |> Plug.Conn.send_resp()
 
-      assert_raise Hawk.InternalServerError, "Invalid host header", fn ->
-        Plug.Hawk.call(conn, credentials_fn: credentials_fn)
-      end
       assert_received {:plug_conn, :sent}
-      assert {500, [{"cache-control", "max-age=0, private, must-revalidate"}], "Internal Server Error"} == sent_resp(conn)
+      assert {500, [{"cache-control", "max-age=0, private, must-revalidate"}], "Invalid host header"} == sent_resp(conn)
     end
   end
 end

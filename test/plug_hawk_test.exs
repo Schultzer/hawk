@@ -14,6 +14,7 @@ defmodule PlugHawkTest do
              |> put_req_header("host", "example1.com:8080")
              |> put_req_header("authorization", "Hawk id=\"1\", ts=\"1353788437\", nonce=\"k3j4h2\", mac=\"zy79QQ5/EYFmQqutVnYb73gAc/U=\", ext=\"hello\"")
              |> Plug.Hawk.call(credentials_fn: credentials_fn, auth: [host: "example.com", localtime_offset_msec: 1353788437000 - Now.msec()])
+             |> Plug.Conn.send_resp()
 
       refute conn.halted
       assert conn.status == 200
@@ -24,6 +25,7 @@ defmodule PlugHawkTest do
       conn = conn
              |> put_req_header("authorization", "Hawk id=\"1\", ts=\"1353788437\", nonce=\"k3j4h2\", mac=\"zy79QQ5/EYFmQqutVnYb73gAc/U=\", ext=\"hello\"")
              |> Plug.Hawk.call(credentials_fn: credentials_fn, auth: [host: "example.com", port: 8080, localtime_offset_msec: 1353788437000 - Now.msec()])
+             |> Plug.Conn.send_resp()
 
       refute conn.halted
       assert conn.status == 200
@@ -31,30 +33,32 @@ defmodule PlugHawkTest do
     end
 
     test "errors on an bad host header (missing host)", %{conn: conn, credentials_fn: credentials_fn} do
-      conn = conn |> put_req_header("host", ":8080") |> put_req_header("authorization", "Hawk id=\"123\", ts=\"1353788437\", nonce=\"k3j4h2\", mac=\"/qwS4UjfVWMcUyW6EEgUH4jlr7T/wuKe3dKijvTvSos=\", ext=\"hello\"")
+      conn = conn
+             |> put_req_header("host", ":8080") |> put_req_header("authorization", "Hawk id=\"123\", ts=\"1353788437\", nonce=\"k3j4h2\", mac=\"/qwS4UjfVWMcUyW6EEgUH4jlr7T/wuKe3dKijvTvSos=\", ext=\"hello\"")
+             |> Plug.Hawk.call(credentials_fn: credentials_fn, auth: [localtime_offset_msec: 1353788437000 - Now.msec()])
+             |> Plug.Conn.send_resp()
 
-      assert_raise Hawk.InternalServerError, "Invalid host header", fn ->
-        Plug.Hawk.call(conn, credentials_fn: credentials_fn, auth: [localtime_offset_msec: 1353788437000 - Now.msec()])
-      end
       assert_received {:plug_conn, :sent}
-      assert {500, [{"cache-control", "max-age=0, private, must-revalidate"}], "Internal Server Error"} == sent_resp(conn)
+      assert {500, [{"cache-control", "max-age=0, private, must-revalidate"}], "Invalid host header"} == sent_resp(conn)
     end
 
     test "errors on an bad host header (pad port)", %{conn: conn, credentials_fn: credentials_fn} do
-      conn = conn |> put_req_header("host", "example.com:something") |> put_req_header("authorization", "Hawk id=\"123\", ts=\"1353788437\", nonce=\"k3j4h2\", mac=\"/qwS4UjfVWMcUyW6EEgUH4jlr7T/wuKe3dKijvTvSos=\", ext=\"hello\"")
+      conn = conn
+             |> put_req_header("host", "example.com:something")
+             |> put_req_header("authorization", "Hawk id=\"123\", ts=\"1353788437\", nonce=\"k3j4h2\", mac=\"/qwS4UjfVWMcUyW6EEgUH4jlr7T/wuKe3dKijvTvSos=\", ext=\"hello\"")
+             |> Plug.Hawk.call(credentials_fn: credentials_fn, auth: [localtime_offset_msec: 1353788437000 - Now.msec()])
+             |> Plug.Conn.send_resp()
 
-      assert_raise Hawk.InternalServerError, "Invalid host header", fn ->
-        Plug.Hawk.call(conn, credentials_fn: credentials_fn, auth: [localtime_offset_msec: 1353788437000 - Now.msec()])
-      end
       assert_received {:plug_conn, :sent}
-      assert {500, [{"cache-control", "max-age=0, private, must-revalidate"}], "Internal Server Error"} == sent_resp(conn)
+      assert {500, [{"cache-control", "max-age=0, private, must-revalidate"}], "Invalid host header"} == sent_resp(conn)
     end
 
     test "errors on a stale timestamp", %{conn: conn, credentials_fn: credentials_fn} do
-      conn = put_req_header(%{conn | port: 8080, host: "example.com"}, "authorization", "Hawk id=\"123456\", ts=\"1362337299\", nonce=\"UzmxSs\", ext=\"some-app-data\", mac=\"wnNUxchvvryMH2RxckTdZ/gY3ijzvccx4keVvELC61w=\"")
-      assert_raise Hawk.Unauthorized, "Stale timestamp", fn ->
-        Plug.Hawk.call(conn, credentials_fn: credentials_fn)
-      end
+      conn = %{conn | port: 8080, host: "example.com"}
+             |> put_req_header("authorization", "Hawk id=\"123456\", ts=\"1362337299\", nonce=\"UzmxSs\", ext=\"some-app-data\", mac=\"wnNUxchvvryMH2RxckTdZ/gY3ijzvccx4keVvELC61w=\"")
+             |> Plug.Hawk.call(credentials_fn: credentials_fn)
+             |> Plug.Conn.send_resp()
+
       assert_received {:plug_conn, :sent}
       {status, headers, msg} = sent_resp(conn)
       header = for {"www-authenticate", value} <- headers, into: <<>>, do: value
@@ -63,7 +67,7 @@ defmodule PlugHawkTest do
       assert String.to_integer(ts, 10) in now-1000..now+1000
       assert status == 401
       assert msg == "Stale timestamp"
-      assert Map.keys(Hawk.Client.authenticate(headers, credentials_fn.("123456"), %{id: "123456", ts: "1362337299", nonce: "UzmxSs", ext: "some-app-data", mac: "wnNUxchvvryMH2RxckTdZ/gY3ijzvccx4keVvELC61w=", port: 8080, host: "example.com"})) == ["www-authenticate"]
+      assert {:ok, %{"www-authenticate" => %{error: "Stale timestamp", ts: _, tsm: _}}} = Hawk.Client.authenticate(headers, credentials_fn.("123456"), %{id: "123456", ts: "1362337299", nonce: "UzmxSs", ext: "some-app-data", mac: "wnNUxchvvryMH2RxckTdZ/gY3ijzvccx4keVvELC61w=", port: 8080, host: "example.com"})
     end
   end
 end

@@ -18,8 +18,7 @@ defmodule Plug.Bewit do
 
   @behaviour Plug
 
-  alias Plug.{Conn, Conn.Status}
-  use Plug.ErrorHandler
+  alias Plug.Conn
 
   def init(opts) do
     opts
@@ -31,17 +30,27 @@ defmodule Plug.Bewit do
 
     conn
     |> Hawk.Request.new(auth)
-    |> Hawk.Server.authenticate_bewit(credentials_fn, opts)
-
-    Conn.resp(conn, 200, "authenticated")
+    |> authenticate(credentials_fn, opts)
+    |> handle_error(conn)
   end
 
-  def handle_errors(conn, %{kind: _kind, reason: %Hawk.Unauthorized{plug_status: status, header: header}, stack: _stack}) do
+  defp authenticate({:error, reason}, _credentials_fn, _options), do: {:error, reason}
+  defp authenticate(request, credentials_fn, options) do
+    Hawk.Server.authenticate_bewit(request, credentials_fn, options)
+  end
+
+  defp handle_error({:error, {401, msg, {header, value}}}, conn) do
     conn
-    |> Conn.put_resp_header("www-authenticate", header)
-    |> Conn.send_resp(status, Status.reason_phrase(status))
+    |> Conn.put_resp_header(header, value)
+    |> Conn.resp(401, msg)
+    |> Conn.halt()
   end
-  def handle_errors(conn, %{kind: _kind, reason: %{plug_status: status}, stack: _stack}) do
-    Conn.send_resp(conn, status, Status.reason_phrase(status))
+  defp handle_error({:error, {status, msg}}, conn) do
+    conn
+    |> Conn.resp(status, msg)
+    |> Conn.halt()
+  end
+  defp handle_error({:ok, _result}, conn) do
+    Conn.resp(conn, 200, "")
   end
 end
