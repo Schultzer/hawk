@@ -39,13 +39,16 @@ defmodule Hawk.Server do
     case Header.parse(req[:authorization]) do
       {:ok, %{id: id, ts: _, nonce: _, mac: mac} = attributes} ->
         artifacts = Map.merge(attributes, %{method: method, host: host, port: port, resource: url})
-        credentials = credentials_fn.(id)
-        %{credentials: credentials, artifacts: artifacts}
-        |> validate_credentials()
-        |> validate_mac(mac, "header")
-        |> check_payload(options)
-        |> check_nonce(options)
-        |> check_timestamp_staleness(now, options, fn -> Crypto.timestamp_message(credentials, options) end)
+        case id |> credentials_fn.() |> validate_credentials() do
+          {:error, reason}   -> {:error, reason}
+
+          {:ok, credentials} ->
+            {:ok, %{artifacts: artifacts, credentials: credentials}}
+            |> validate_mac(mac, "header")
+            |> check_payload(options)
+            |> check_nonce(options)
+            |> check_timestamp_staleness(now, options, fn -> Crypto.timestamp_message(credentials, options) end)
+        end
 
       {:ok, _attributes} -> {:error, {400, "Missing attributes"}}
 
@@ -149,20 +152,24 @@ defmodule Hawk.Server do
   def authenticate_bewit(%{method: method}, _credentials_fn, _options) when method not in ["GET", "HEAD"], do: {:error, {401, "Invalid method", Header.error("Invalid method")}}
   def authenticate_bewit(%{authorization: authorization}, _credentials_fn, _options) when authorization !== [], do: {:error, {400, "Multiple authentications"}}
   def authenticate_bewit(req, credentials_fn, options) do
-     options = Map.merge(%{timestamp_skew_sec: 60}, options)
+    options = Map.merge(%{timestamp_skew_sec: 60}, options)
     now = Now.msec(options)
     case parse(req[:url], now) do
       {:error, reason}    -> {:error, reason}
 
-      {:ok, bewit, url} ->
-        %{credentials: credentials_fn.(bewit[:id]), artifacts: %{ts: bewit[:exp], nonce: "", method: "GET", resource: url, host: req[:host], port: req[:port], ext: bewit[:ext]}}
-        |> validate_credentials()
-        |> validate_mac(bewit[:mac], "bewit")
-        |> case do
-             {:ok, %{credentials: credentials}} -> {:ok, %{attributes: bewit, credentials: credentials}}
+      {:ok, %{id: id, exp: exp, ext: ext, mac: mac} = bewit, url} ->
+        case id |> credentials_fn.() |> validate_credentials() do
+          {:error, reason}   -> {:error, reason}
 
-             {:error, reason}                   -> {:error, reason}
-           end
+          {:ok, credentials} ->
+            {:ok, %{artifacts: %{ts: exp, nonce: "", method: "GET", resource: url, host: req[:host], port: req[:port], ext: ext}, credentials: credentials}}
+            |> validate_mac(mac, "bewit")
+            |> case do
+                 {:ok, %{credentials: credentials}} -> {:ok, %{attributes: bewit, credentials: credentials}}
+
+                 {:error, reason}                   -> {:error, reason}
+               end
+        end
     end
   end
 
@@ -236,23 +243,33 @@ defmodule Hawk.Server do
     now = Now.msec(options)
 
     %{artifacts: %{port: port, host: host, ts: ts, nonce: nonce, hash: hash}, credentials: credentials_fn.(id)}
-    |> validate_credentials()
-    |> validate_mac(mac, "message")
-    |> check_payload(%{payload: message}, "Bad message hash")
-    |> check_nonce(options)
-    |> check_timestamp_staleness(now, options)
-    |> case do
-         {:error, reason}                   -> {:error, reason}
 
-         {:ok, %{credentials: credentials}} -> {:ok, %{credentials: credentials}}
-       end
+    case id |> credentials_fn.() |> validate_credentials() do
+      {:error, reason}   -> {:error, reason}
+
+      {:ok, credentials} ->
+        {:ok, %{artifacts: %{port: port, host: host, ts: ts, nonce: nonce, hash: hash}, credentials: credentials}}
+        |> validate_mac(mac, "message")
+        |> check_payload(%{payload: message}, "Bad message hash")
+        |> check_nonce(options)
+        |> check_timestamp_staleness(now, options)
+        |> case do
+             {:error, reason}                   -> {:error, reason}
+
+             {:ok, %{credentials: credentials}} -> {:ok, %{credentials: credentials}}
+           end
+    end
   end
   def authenticate_message(_host, _port, _message, _authorization, _credentials_fn, _options), do: {:error, {400, "Invalid authorization"}}
 
-  defp validate_credentials(%{credentials: %{algorithm: algorithm, key: _key}} = result) when algorithm in @algorithms, do: {:ok, result}
-  defp validate_credentials(%{credentials: %{algorithm: _,}}), do: {:error, {500, "Unknown algorithm"}}
-  defp validate_credentials(%{credentials: credentials}) when is_map(credentials), do: {:error, {500, "Invalid credentials"}}
-  defp validate_credentials(%{credentials: _}), do: {:error, {401, "Unknown credentials", Header.error("Unknown credentials")}}
+  defp validate_credentials({:error, {status, msg, header}}), do: {:error, {status, msg, header}}
+  defp validate_credentials({:ok, %{algorithm: algorithm, key: _key}} = result) when algorithm in @algorithms, do: result
+  defp validate_credentials(%{algorithm: algorithm, key: _key} = result) when algorithm in @algorithms, do: {:ok, result}
+  defp validate_credentials({:ok, %{algorithm: _,}}), do: {:error, {500, "Unknown algorithm"}}
+  defp validate_credentials(%{algorithm: _,}), do: {:error, {500, "Unknown algorithm"}}
+  defp validate_credentials({:ok, credentials}) when is_map(credentials), do: {:error, {500, "Invalid credentials"}}
+  defp validate_credentials(credentials) when is_map(credentials), do: {:error, {500, "Invalid credentials"}}
+  defp validate_credentials(_credentials), do: {:error, {401, "Unknown credentials", Header.error("Unknown credentials")}}
 
   def validate_mac({:error, reason}, _mac, _type), do: {:error, reason}
   def validate_mac({:ok, %{artifacts: artifacts, credentials: credentials}} = ok, mac, type) do
