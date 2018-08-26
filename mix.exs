@@ -1,7 +1,7 @@
 defmodule Hawk.Mixfile do
   use Mix.Project
 
-  @version "0.2.0"
+  @version "0.3.0"
 
   def project do
     [
@@ -24,7 +24,6 @@ defmodule Hawk.Mixfile do
     [
       {:sntp, "~> 0.2.1"},
       {:kryptiles, "~> 0.1.0"},
-      {:plug, ">= 0.0.0", optional: true},
       {:ex_doc, "~> 0.14", only: :dev}
     ]
   end
@@ -42,7 +41,6 @@ defmodule Hawk.Mixfile do
   defp groups_for_modules() do
     [
       Hawk:  [Hawk.Client, Hawk.Server, Hawk.Crypto],
-      Plugs: [Plug.Hawk, Plug.Bewit]
     ]
   end
 end

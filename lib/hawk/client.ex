@@ -1,21 +1,19 @@
 defmodule Hawk.Client do
   @moduledoc """
-  This module provides functions to create request headers and authenticate response
+  This module provides functions to create request headers and authenticate response.
 
   ## Examples
 
-      defmodule Myapp do
-        def request_and_authenticate(uri \\\\ "example.com") do
-          my_credentials  = %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}
-          %{header: header, artifacts: artifacts} = Hawk.Client.header(uri, :get, my_credentials)
+      defmodule Myapp.Hawk do
+        def request_and_authenticate(uri, credentials) do
+          result = Hawk.Client.header(uri, :get, credentials)
 
-
-          case :httpc.request(:get, {[uri], [{'authorization', [header]}]}) do
+          case :httpc.request(:get, {[uri], [{'authorization', [result.header]}]}) do
             {:error, reason} ->
               {:error, reason}
 
             {:ok, {_status_line, headers, _body}}  ->
-              Hawk.Client.authenticate(headers, my_credentials, artifacts)
+              Hawk.Client.authenticate(headers, result)
           end
         end
       end
@@ -30,7 +28,7 @@ defmodule Hawk.Client do
   @methods ~w(delete get patch post put)a
 
   @doc """
-  Generate an Authorization header for a given request, takes an uri `binary() | URI.t()`, `Hawk.Client.method()` and `Hawk.Client.credentials()`
+  Generate an Authorization header for a given request.
 
   Options
     * `:ext` Application specific data sent via the ext attribute
@@ -42,13 +40,8 @@ defmodule Hawk.Client do
     * `:hash` Pre-calculated payload hash
     * `:app` Oz application id
     * `:dlg` Oz delegated-by application id
-
-
-  ## Examples
-
-      Hawk.Client.header("http://example.com/resource?a=b", :get, %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"})
   """
-  @spec header(binary() | URI.t(), Hawk.method(), map(), keyword() | map()) :: %{artifacts: map(), header: binary()}
+  @spec header(binary() | URI.t(), :delete | :get | :patch | :post | :put, map(), Hawk.opts()) :: %{artifacts: map(), credentials: map(), header: binary()}
   def header(uri, method, credentials, options \\ %{})
   def header(uri, method, credentials, options) when is_list(options), do: header(uri, method, credentials, Map.new(options))
   def header(uri, method, %{algorithm: algorithm, id: _, key: _} = credentials, options) when is_binary(uri) and byte_size(uri) > 0 and algorithm in @algorithms and method in @methods do
@@ -58,15 +51,15 @@ defmodule Hawk.Client do
   end
   def header(%URI{} = uri, method, %{algorithm: algorithm, id: _id, key: _key} = credentials, %{hash: _hash} = options) when algorithm in @algorithms and method in @methods do
     artifacts = create_artifacts(uri, method, options)
-    %{artifacts: artifacts, header: create_header(artifacts, credentials)}
+    %{artifacts: artifacts, credentials: credentials, header: create_header(artifacts, credentials)}
   end
   def header(%URI{} = uri, method, %{algorithm: algorithm, id: _id, key: _key} = credentials, %{payload: payload} = options) when algorithm in @algorithms and method in @methods do
     artifacts = uri |> create_artifacts(method, options) |> Map.put(:hash, Crypto.calculate_payload_hash(algorithm, "#{payload}", "#{options[:content_type]}"))
-    %{artifacts: artifacts, header: create_header(artifacts, credentials)}
+    %{artifacts: artifacts, credentials: credentials, header: create_header(artifacts, credentials)}
   end
   def header(%URI{} = uri, method, %{algorithm: algorithm, id: _id, key: _key} = credentials, options) when algorithm in @algorithms and method in @methods do
     artifacts = create_artifacts(uri, method, options)
-    %{artifacts: artifacts, header: create_header(artifacts, credentials)}
+    %{artifacts: artifacts, credentials: credentials, header: create_header(artifacts, credentials)}
   end
 
   defp create_artifacts(%URI{host: host, port: port} = uri, method, options) do
@@ -91,20 +84,16 @@ defmodule Hawk.Client do
   defp header_string(rest, pos, acc), do: header_string(rest, pos + 1, acc)
 
   @doc """
-  Validate a `:httpc` response
+  Authenticate response `headers`
 
   ## Options
     * `:payload` optional payload received
     * `:required` specifies if a Server-Authorization header is required. Defaults to `false`
-
-  ## Examples
-
-      iex> Hawk.Client.authenticate(res, %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}, artifacts)
   """
-  @spec authenticate(headers(), map(), map(), keyword() | map()) :: {:ok, map()} | {:error, term()}
-  def authenticate(headers, credentials, artifacts, options \\ %{})
-  def authenticate(headers, credentials, artifacts, options) when is_list(options), do: authenticate(headers, credentials, artifacts, Map.new(options))
-  def authenticate(headers, %{algorithm: algorithm, id: _id, key: _key} = credentials, artifacts, options) when algorithm in @algorithms and is_map(artifacts) and is_list(headers) do
+  @spec authenticate(headers(), map(), Hawk.opts()) :: {:ok, map()} | {:error, {integer(), binary()}}
+  def authenticate(headers, result, options \\ %{})
+  def authenticate(headers, result, options) when is_list(options), do: authenticate(headers, result, Map.new(options))
+  def authenticate(headers, %{credentials: %{algorithm: algorithm, id: _id, key: _key} = credentials, artifacts: artifacts}, options) when algorithm in @algorithms and is_map(artifacts) and is_list(headers) do
     headers
     |> parse_headers()
     |> validate_headers(credentials, artifacts, options)
@@ -196,24 +185,28 @@ defmodule Hawk.Client do
   defp validate_hash(headers, _algorithm, _options), do: headers
 
   @doc """
-  Generate a bewit value for a given URI
-  takes 3 arguments `binary() | URI.t()`, `Hawk.Client.credentials()` and time to live in seconds
+  Generate a bewit value for a given URI.
 
   ## Options
     * `:ext` Application specific data sent via the ext attribute
     * `:localtime_offset_msec` Time offset to sync with server time
 
   ## Examples
-      iex> credentials = %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}
-      iex> ttl = 60 * 60
-      iex> options = %{ext: "application-specific", localtime_offset_msec: 400}
-      iex> uri = URI.parse("http://example.com/resource?a=b")
-
-      iex> Hawk.Client.get_bewit("http://example.com/resource?a=b", credentials, ttl)
-
-      iex> Hawk.Client.get_bewit(uri, credentials, ttl)
+      iex> Hawk.Client.get_bewit("http://example.com/resource?a=b", %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}, 3600, ext: "application-specific", localtime_offset_msec: 400)
+      %{
+        artifacts: %{
+          ext: "application-specific",
+          host: "example.com",
+          method: "GET",
+          nounce: "",
+          port: 80,
+          resource: "/resource?a=b",
+          ts: 1535315623
+        },
+        bewit: "ZGgzN2ZnajQ5MmplXDE1MzUzMTU2MjNcZE9laXcxL1Z4SjVSeVFKOXFJT0l1cFhVQ3VwTzZiMG5OeDBRMWROOXZVcz1cYXBwbGljYXRpb24tc3BlY2lmaWM"
+      }
   """
-  @spec get_bewit(binary() | URI.t(), map(), integer(), keyword() | map()) :: %{artifacts: map(), bewit: binary()}
+  @spec get_bewit(binary() | URI.t(), map(), integer(), Hawk.opts()) :: %{artifacts: map(), bewit: binary()}
   def get_bewit(uri, credentials, ttl, options \\ %{})
   def get_bewit(uri, credentials, ttl, options) when is_list(options), do: get_bewit(uri, credentials, ttl, Map.new(options))
   def get_bewit(uri, %{algorithm: algorithm, id: _, key: _} = credentials, ttl, options) when is_binary(uri) and byte_size(uri) > 0 and is_integer(ttl) and algorithm in @algorithms do
@@ -240,7 +233,7 @@ defmodule Hawk.Client do
       iex> Hawk.Client.message("example.com", 8000, "{\\"some\\":\\"payload\\"}", %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}, hash: "osPwIDqS9cUeJnQRQEdq8upF/tGVVyo6KFgUiUoDoLs=", timestamp: 1531684204, nonce: "x0AIzk")
       %{hash: "osPwIDqS9cUeJnQRQEdq8upF/tGVVyo6KFgUiUoDoLs=", id: "dh37fgj492je", mac: "Yb4eQ2MXJAc4MFvyouOOGhLKE9Ys/PqdYYub6gYwgrI=", nonce: "x0AIzk", ts: 1531684204}
   """
-  @spec message(binary(), 0..65535, binary(), map(), keyword() | map()) :: %{hash: binary(), id: binary(), mac: binary(), host: binary(), port: 0..65535, nonce: binary(), ts: integer()}
+  @spec message(binary(), 0..65535, binary(), map(), Hawk.opts()) :: %{hash: binary(), id: binary(), mac: binary(), host: binary(), port: 0..65535, nonce: binary(), ts: integer()}
   def message(host, port, message, credentials, options \\ %{})
   def message(host, port, message, credentials, options) when is_list(options), do: message(host, port, message, credentials, Map.new(options))
   def message(host, port, message, %{algorithm: algorithm, id: id, key: _} = credentials, options) when is_binary(host) and byte_size(host) > 0 and is_binary(message) and port in 0..65535 and algorithm in @algorithms do

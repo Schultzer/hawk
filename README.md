@@ -17,32 +17,65 @@ end
 ### Client
 
 ```elixir
-defmodule Myapp do
-  def request_and_authenticate(uri \\\\ "example.com") do
-    my_credentials  = %{algorithm: :sha256, id: "dh37fgj492je", key: "aoijedoaijsdlaksjdl"}
-    %{header: header, artifacts: artifacts} = Hawk.Client.header(uri, :get, my_credentials)
+defmodule Myapp.Hawk do
+  def request_and_authenticate(uri, credentials) do
+    result = Hawk.Client.header(uri, :get, credentials)
 
-
-    case :httpc.request(:get, {[uri], [{'authorization', [header]}]}) do
+    case :httpc.request(:get, {[uri], [{'authorization', [result.header]}]}) do
       {:error, reason} ->
         {:error, reason}
 
       {:ok, {_status_line, headers, _body}}  ->
-        Hawk.Client.authenticate(headers, my_credentials, artifacts)
+        Hawk.Client.authenticate(headers, result)
     end
   end
 end
 ```
 
-### Plug
+### Server with plug
 
 ```elixir
-defmodule Myapp.Router do
-...
-  pipeline :hawk do
-    plug Plug.Hawk, credentials_fn: &Mypp.Accounts.get_credential!/1
+defmodule Myapp.Hawk.Config do
+  use Hawk.Config
+
+  def get_credentials(id) do
+    case MyRepo.get_by(Crendentials, id: id) do
+      crendentials when is_map(crendentials) -> crendentials
+
+      _ -> nil
+    end
   end
-...
+end
+
+defmodule Myapp.Hawk do
+  @behaviour Plug
+
+  def init(opts) do
+    opts
+  end
+
+  def call(conn, opts) do
+    conn
+    |> Hawk.Request.new()
+    |> Hawk.Server.authenticate(Myapp.Hawk.Config)
+    |> case do
+         {:ok, result} ->
+           conn
+           |> Plug.Conn.put_resp_header("server-authorization", Hawk.Server.header(result))
+           |> Plug.Conn.put_status(200)
+
+         {:error, {status, msg, {header, value}}} ->
+           conn
+           |> Plug.Conn.put_resp_header(header, value)
+           |> Plug.Conn.resp(status, msg)
+           |> Plug.Conn.halt()
+
+         {:error, {status, msg}} ->
+           conn
+           |> Plug.Conn.resp(status, msg)
+           |> Plug.Conn.halt()
+       end
+  end
 end
 ```
 

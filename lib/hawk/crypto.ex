@@ -1,12 +1,15 @@
 defmodule Hawk.Crypto do
   @moduledoc false
 
+  @typedoc false
+  @type algorithm :: atom() | charlist() | binary()
+
   @doc false
   @spec header_version() :: pos_integer()
   def header_version(), do: 1
 
   @doc false
-  @spec algorithms() :: [Hawk.algorithm(), ...]
+  @spec algorithms() :: [algorithm(), ...]
   def algorithms(), do: ~w(sha sha256)a ++ ~w(sha sha256)c ++ ~w(sha sha256)s
 
   @doc """
@@ -29,7 +32,7 @@ defmodule Hawk.Crypto do
       iex> Hawk.Crypto.calculate_mac("response", %{algorithm: :sha256, key: "aoijedoaijsdlaksjdl"}, %{method: "GET", resource: "/resource?a=1&b=2", host: "example.com", port: 8080, ts: 1357718381034, nonce: "d3d345f", hash: "U4MKKSmiVxk37JCCrAVIjV/OhB3y+NdwoCr6RShbVkE=", ext: "app-specific-data", app: "hf48hd83qwkj", dlg: "d8djwekds9cj"})
       "bhFj6x2GixVKlUb9/0/yoF0vMMNQscmHMX8N8Al4xVc"
   """
-  @spec calculate_mac(iodata(), map(), keyword() | map()) :: binary()
+  @spec calculate_mac(iodata(), map(), Hawk.opts()) :: binary()
   def calculate_mac(type, credentials, options) when is_list(options), do: calculate_mac(type, credentials, Map.new(options))
   def calculate_mac(type, %{algorithm: algorithm, key: key}, options) do
     normalized = generate_normalized_string(type, options)
@@ -41,7 +44,7 @@ defmodule Hawk.Crypto do
   end
 
   @doc false
-  @spec generate_normalized_string(iodata(), keyword() | map()) :: binary()
+  @spec generate_normalized_string(iodata(), Hawk.opts()) :: binary()
   def generate_normalized_string(type, options) do
     resource = "#{options[:resource]}" |> URI.parse() |> Hawk.Request.resource()
 
@@ -79,7 +82,7 @@ defmodule Hawk.Crypto do
   end
 
   @doc false
-  @spec timestamp_message(map(), Enumerable.t()) :: %{ts: integer(), tsm: binary()}
+  @spec timestamp_message(map(), Hawk.opts()) :: %{ts: integer(), tsm: binary()}
   def timestamp_message(credentials, options) do
     now = Hawk.Now.sec(options)
     tsm = calculate_ts_mac(now, credentials)
@@ -96,8 +99,10 @@ defmodule Hawk.Crypto do
   end
 
   @doc false
-  @spec to_atom(Hawk.algorithm()) :: atom()
-  def to_atom(algorithm) when is_binary(algorithm), do: :erlang.binary_to_atom(algorithm, :utf8)
-  def to_atom(algorithm) when is_list(algorithm),   do: :erlang.list_to_atom(algorithm)
-  def to_atom(algorithm) when is_atom(algorithm),   do: algorithm
+  @spec to_atom(algorithm()) :: :sha | :sha256
+  for {atom, list, binary} <- [{:sha, 'sha', "sha"}, {:sha256, 'sha256', "sha256"}] do
+    def to_atom(unquote(atom)),   do: unquote(atom)
+    def to_atom(unquote(list)),   do: unquote(atom)
+    def to_atom(unquote(binary)), do: unquote(atom)
+  end
 end

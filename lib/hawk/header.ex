@@ -1,9 +1,5 @@
 defmodule Hawk.Header do
   @moduledoc false
-  @attr ~w(app dlg error ext hash id mac nonce ts tsm)a
-
-  # alias Hawk.{BadRequest, InternalServerError, Unauthorized}
-
 
   @doc """
   Parse an `Authorization Header`
@@ -19,7 +15,7 @@ defmodule Hawk.Header do
     iex> Hawk.Header.parse("Scheme a=\"#{for _ <- 1..5000, into: <<>>, do: "x"}\"")
     {:error, {400, "Header length too long"}}
   """
-  @spec parse(binary() | charlist()) :: {:ok, map()} | {:error, term()}
+  @spec parse(binary() | charlist()) :: {:ok, map()} | {:error, {integer, binary()}} | {:error, {integer, binary(), {binary(), binary()}}}
   def parse([]), do: {:error, {401, "Unauthorized", __MODULE__.error()}}
   def parse(header) when byte_size(header) > 4096, do: {:error, {400, "Header length too long"}}
   def parse(header) when length(header) > 4096, do: {:error, {400, "Header length too long"}}
@@ -44,7 +40,7 @@ defmodule Hawk.Header do
   def parse(_header), do: {:error, {500, "Invalid host header"}}
 
   defp parse_attributes(binary, attributes \\ %{})
-  for match <- @attr do
+  for match <- ~w(app dlg error ext hash id mac nonce ts tsm)a do
     list = :erlang.atom_to_list(match)
     key = :erlang.atom_to_binary(match, :utf8)
     defp parse_attributes(<<unquote(key), ?=, _rest::binary()>>, %{unquote(match) => _}), do: {:error, {400, "Duplicate attribute: #{unquote(match)}"}}
@@ -100,7 +96,7 @@ defmodule Hawk.Header do
     |> :binary.replace("\"", "\\\"")
   end
 
-  @doc !"""
+  @doc """
   Generate a `WWW-Authenticate` header
 
   # Examples
