@@ -31,12 +31,11 @@ defmodule Hawk.Server do
     now = Now.msec(options)
     case Header.parse(req[:authorization]) do
       {:ok, %{id: id, ts: _, nonce: _, mac: mac} = attributes} ->
-        artifacts = Map.merge(attributes, %{method: method, host: host, port: port, resource: url})
         case id |> config.get_credentials(options) |> validate_credentials() do
           {:error, reason}   -> {:error, reason}
 
           {:ok, credentials} ->
-            {:ok, %{artifacts: artifacts, credentials: credentials}}
+            {:ok, %{artifacts: Map.merge(attributes, %{method: method, host: host, port: port, resource: url}), credentials: credentials}}
             |> validate_mac(mac, "header")
             |> check_payload(options)
             |> check_nonce(config)
