@@ -5,7 +5,7 @@ defmodule HawkTest do
   defmodule Config do
     use Hawk.Config
 
-    def get_credentials(id) do
+    def get_credentials(id, _opts) do
       %{id: id, key: "werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn", algorithm: (if id == "1", do: :sha, else: :sha256), user: "steve"}
     end
   end

@@ -5,7 +5,7 @@ defmodule HawkServerTest do
   defmodule Config do
     use Hawk.Config
 
-    def get_credentials(id) do
+    def get_credentials(id, _opts) do
       %{id: id, key: "werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn", algorithm: (if id == "1", do: :sha, else: :sha256), user: "steve"}
     end
   end
@@ -13,13 +13,13 @@ defmodule HawkServerTest do
   defmodule ConfigNonce do
     use Hawk.Config
 
-    def get_credentials("123") do
+    def get_credentials("123", _opts) do
       %{id: "123", key: "werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn", algorithm: :sha256, user: "steve"}
     end
-    def get_credentials("456") do
+    def get_credentials("456", _opts) do
       %{id: "456", key: "xrunpaw3489ruxnpa98w4rxnwerxhqb98rpaxn39848", algorithm: :sha256, user: "bob"}
     end
-    def get_credentials(id) do
+    def get_credentials(id, _opts) do
       %{id: id, key: "werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn", algorithm: (if id == "1", do: :sha, else: :sha256), user: "steve"}
     end
 
@@ -41,7 +41,7 @@ defmodule HawkServerTest do
   defmodule ConfigNonceFail do
     use Hawk.Config
 
-    def get_credentials(id) do
+    def get_credentials(id, _opts) do
       %{id: id, key: "werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn", algorithm: (if id == "1", do: :sha, else: :sha256), user: "steve"}
     end
 
@@ -51,31 +51,31 @@ defmodule HawkServerTest do
   defmodule ConfigFail do
     use Hawk.Config
 
-    def get_credentials(_id), do: nil
+    def get_credentials(_id, _opts), do: nil
   end
 
   defmodule ConfigId do
     use Hawk.Config
 
-    def get_credentials(_id), do: %{key: "werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn", user: "steve"}
+    def get_credentials(_id, _opts), do: %{key: "werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn", user: "steve"}
   end
 
   defmodule ConfigKey do
     use Hawk.Config
 
-    def get_credentials(_id), do: %{id: "23434d3q4d5345d", user: "steve"}
+    def get_credentials(_id, _opts), do: %{id: "23434d3q4d5345d", user: "steve"}
   end
 
   defmodule ConfigAlgorithm do
     use Hawk.Config
 
-    def get_credentials(id), do: %{id: id, key: "werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn", algorithm: "hmac-sha-0", user: "steve"}
+    def get_credentials(id, _opts), do: %{id: id, key: "werxhqb98rpaxn39848xrunpaw3489ruxnpa98w4rxn", algorithm: "hmac-sha-0", user: "steve"}
   end
 
   defmodule ConfigWrongKey do
     use Hawk.Config
 
-    def get_credentials(id), do: %{id: id, key: "xxx", algorithm: :sha256, user: "steve"}
+    def get_credentials(id, _opts), do: %{id: id, key: "xxx", algorithm: :sha256, user: "steve"}
   end
 
   def authenticate(_context) do

@@ -42,6 +42,8 @@ defmodule Hawk.Config do
     quote do
       @behaviour unquote(__MODULE__)
 
+      def get_credentials(id, opts \\ %{})
+
       def nonce(key, nonce, ts), do: :ok
 
       defoverridable unquote(__MODULE__)
