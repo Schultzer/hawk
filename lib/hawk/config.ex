@@ -35,7 +35,7 @@ defmodule Hawk.Config do
 
   @type credentials :: %{algoritim: binary() | atom(), id: binary() | integer(), key: binary()}
   @callback nonce(binary(), binary(), binary() | integer()) :: :ok | :error
-  @callback get_credentials(term(), Hawk.opts()) :: credentials | nil
+  @callback get_credentials(binary(), Hawk.opts()) :: credentials | nil
 
   @doc false
   defmacro __using__(_) do
